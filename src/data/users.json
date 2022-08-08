@@ -1,0 +1,1 @@
+[{"email":"test@test.com","password":"123","refreshToken":"qwerty"},{"email":"test2@test.com","password":"$argon2id$v=19$m=4096,t=3,p=1$SlQ6csdGJBgC3xTrgF8aEA$i40a4k/bM5SHxbxSlpWS39TLNDl7gbfUdf+3rBQyKv0","refreshToken":""}]
