@@ -24,7 +24,7 @@ class Auth {
 
     try {
       const encrypt = await argon.hash(payload.password);
-      const newUser = { ...payload, password: encrypt };
+      const newUser = { ...payload, password: encrypt, refreshToken: [] };
       const setUser = [...db, newUser];
 
       await createFile(setUser);
@@ -35,6 +35,8 @@ class Auth {
     }
   }
   async login(req: Request, res: Response, next: NextFunction) {
+    const cookie = req.cookies as { jwt: string };
+    console.log(`cookie is ${cookie.jwt}`);
     const payload = req.body as payloadType;
 
     if (payload.email.length < 1 || payload.password.length < 1) {
@@ -61,8 +63,20 @@ class Auth {
         { expiresIn: "1d" }
       );
 
+      let otherRefreshToken = cookie?.jwt
+        ? user[0].refreshToken.filter((item) => item !== cookie.jwt)
+        : user[0].refreshToken;
+
+      if (cookie.jwt) {
+        res.clearCookie("jwt", { httpOnly: true });
+      }
+
       const otherUser = db.filter((item) => item.email !== payload.email);
-      const currentUser = { ...user[0], refreshToken };
+      const currentUser = {
+        ...user[0],
+        refreshToken: [...otherRefreshToken, refreshToken],
+      };
+      console.log(currentUser);
       const setUser = [...otherUser, currentUser];
 
       const oneDay = 24 * 60 * 60 * 1000;
@@ -75,15 +89,43 @@ class Auth {
       return next(error);
     }
   }
-  refreshToken(req: Request, res: Response, next: NextFunction) {
+  async refreshToken(req: Request, res: Response, next: NextFunction) {
     const cookie = req.cookies as { jwt: string };
 
     if (!cookie?.jwt) return res.sendStatus(401);
 
     const refreshToken = cookie.jwt;
+    res.clearCookie("jwt", { httpOnly: true });
 
-    const user = db.filter((item) => item.refreshToken === refreshToken);
-    if (user.length < 1) return res.sendStatus(401);
+    const user = db.filter((item) => item.refreshToken.includes(refreshToken));
+    // detect reuse refresh token
+
+    if (user.length < 1) {
+      jwt.verify(
+        refreshToken,
+        config.refreshKey as string,
+        async (err, decoded) => {
+          if (err) return res.sendStatus(403);
+          console.log("reuse refresh token");
+          const payload = decoded as { email: string };
+          const userHacked = db.filter((item) => item.email === payload.email);
+          userHacked[0].refreshToken = [];
+          console.log(userHacked);
+          // save
+          const otherUser = db.filter((item) => item.email !== payload.email);
+          const setUser = [...otherUser, userHacked[0]];
+
+          await createFile(setUser);
+          return;
+        }
+      );
+      return res.sendStatus(401);
+    }
+
+    const otherRefreshToken = user[0].refreshToken.filter(
+      (item) => item !== refreshToken
+    );
+    const otherUser = db.filter((item) => item.email !== user[0].email);
 
     try {
       const decode = jwt.verify(refreshToken, config.refreshKey as string) as {
@@ -94,9 +136,28 @@ class Auth {
         config.accessKey as string,
         { expiresIn: "30s" }
       );
+      const newRefreshToken = jwt.sign(
+        { email: decode.email },
+        config.refreshKey as string,
+        { expiresIn: "1d" }
+      );
 
+      user[0].refreshToken = [...otherRefreshToken, newRefreshToken];
+      const setUser = [...otherUser, user[0]];
+
+      await createFile(setUser);
+      const oneDay = 24 * 60 * 60 * 1000;
+
+      res.cookie("jwt", newRefreshToken, { httpOnly: true, maxAge: oneDay });
       return res.status(200).json({ accessToken });
     } catch (error) {
+      // delete refresh token
+      console.log("refresh token have problem");
+      user[0].refreshToken = otherRefreshToken;
+      console.log(user);
+      const setUser = [...otherUser, user[0]];
+
+      await createFile(setUser);
       return next(error);
     }
   }
@@ -106,15 +167,21 @@ class Auth {
     if (!cookie?.jwt) return res.sendStatus(204);
 
     const refreshToken = cookie.jwt;
-    const user = db.filter((item) => item.refreshToken === refreshToken);
+    const user = db.filter((item) => item.refreshToken.includes(refreshToken));
 
     if (user.length < 1) {
       res.clearCookie("jwt", { httpOnly: true });
       return res.sendStatus(204);
     }
 
-    const otherUser = db.filter((item) => item.refreshToken !== refreshToken);
-    const currentUser = { ...user[0], refreshToken: "" };
+    const otherUser = db.filter(
+      (item) => !item.refreshToken.includes(refreshToken)
+    );
+    const otherRefreshToken = user[0].refreshToken.filter(
+      (item) => item !== refreshToken
+    );
+    const currentUser = { ...user[0], refreshToken: otherRefreshToken };
+    console.log(currentUser);
     const setUser = [...otherUser, currentUser];
 
     try {
